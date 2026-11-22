@@ -39,7 +39,7 @@ speaker, so Hermes can speak on it on demand: `send_message` to `gadget:<id>`,
 cron delivery, or the gadget home channel. Hermes renders speech with its own
 TTS and streams PCM; the client plays it on LibreEcho's announcement bus, which
 ducks music and waits for the device's own speech. No microphone or wake word
-is involved.
+is involved. Talking back to Hermes is planned in [docs/two-way-voice.md](docs/two-way-voice.md).
 
 With the device booted and on USB (host `adb`, `curl` and `python3`):
 
