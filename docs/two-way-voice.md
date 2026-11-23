@@ -19,7 +19,7 @@ and language. Gateways can still speak on their own without being asked.
 conversation with `hermes-01` in English, then with `hermes-03` in Japanese
 (see [Demo](#demo)).
 
-## What runs today: Hermes → Echo (steps 6–7)
+## What runs today: Hermes → Echo
 
 - `dot-gadget` on each Echo holds one gadget WebSocket per Hermes. Each socket
   has its own device key and id, paired with `hermes pairing approve gadget CODE`.
@@ -31,7 +31,7 @@ conversation with `hermes-01` in English, then with `hermes-03` in Japanese
 - Upstream pieces: hermes-gadget-sdk #305 (proactive speech), #327 (queue and
   overflow) and #331 (`gadget_speak`), all merged.
 
-## The attack: Echo → Hermes (steps 1–5)
+## The attack: Echo → Hermes
 
 The gadget protocol already carries speech from a device: `{"type":"text"}`, or
 `audio.start` followed by PCM frames. Hermes answers either one with
