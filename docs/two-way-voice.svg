@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 400" width="940" height="400" font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+  <title>Two-way voice: LibreEcho devices and Hermes gateways</title>
+  <defs>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0L8,4L0,8z" fill="#2563eb"/></marker>
+    <marker id="g" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0L8,4L0,8z" fill="#16a34a"/></marker>
+    <style>
+      text { fill: #111827; font-size: 14px; }
+      .s { font-size: 12px; fill: #4b5563; }
+      .l { font-size: 12px; fill: #374151; }
+      .t { font-size: 18px; font-weight: 600; }
+      .box { fill: #ffffff; stroke: #3b82f6; stroke-width: 1.4; }
+      .dash { fill: #ffffff; stroke: #9ca3af; stroke-width: 1.4; stroke-dasharray: 5 4; }
+      .in { stroke: #2563eb; stroke-width: 2; fill: none; stroke-dasharray: 6 4; }
+      .out { stroke: #16a34a; stroke-width: 2; fill: none; }
+    </style>
+  </defs>
+  <rect width="940" height="400" fill="#ffffff"/>
+
+  <text class="t" x="20" y="32">Two-way voice: many LibreEchos ↔ many Hermes gateways</text>
+  <text class="s" x="20" y="52">Green, solid: runs today. Blue, dashed: planned.</text>
+
+  <!-- Echoes -->
+  <rect class="box" x="20" y="100" width="280" height="110" rx="8"/>
+  <text x="34" y="124">Echo Dot 2nd Gen (LibreEcho)</text>
+  <text class="s" x="34" y="146">dot-gadget: speaker (today)</text>
+  <text class="s" x="34" y="166">+ wake word → on-device STT shim:</text>
+  <text class="s" x="34" y="184">SenseVoice text + language, speaker ID,</text>
+  <text class="s" x="34" y="202">routing by name / speaker / language</text>
+
+  <rect class="dash" x="20" y="240" width="280" height="62" rx="8"/>
+  <text x="34" y="264">Echo B … Echo N</text>
+  <text class="s" x="34" y="286">same client, own device key per gateway</text>
+
+  <!-- Gateways -->
+  <rect class="box" x="640" y="70" width="280" height="70" rx="8"/>
+  <text x="654" y="94">Hermes gateway A · hermes-01</text>
+  <text class="s" x="654" y="114">gadget plugin · agent · TTS</text>
+  <text class="s" x="654" y="131">demo: English</text>
+
+  <rect class="box" x="640" y="160" width="280" height="70" rx="8"/>
+  <text x="654" y="184">Hermes gateway B · hermes-03</text>
+  <text class="s" x="654" y="204">gadget plugin · agent · TTS</text>
+  <text class="s" x="654" y="221">demo: Japanese</text>
+
+  <rect class="dash" x="640" y="250" width="280" height="62" rx="8"/>
+  <text x="654" y="274">Any gadget-protocol gateway</text>
+  <text class="s" x="654" y="294">text in, speaker audio out</text>
+
+  <!-- Echo -> gateways: text turn (planned) -->
+  <path class="in" d="M300,132 H585 V97 H636" marker-end="url(#a)"/>
+  <path class="in" d="M585,132 V187 H636" marker-end="url(#a)"/>
+  <path class="in" d="M585,187 V273 H636" marker-end="url(#a)"/>
+  <text class="l" x="312" y="124">text turn to the gateway it picked</text>
+
+  <!-- gateways -> Echo: PCM (today) -->
+  <path class="out" d="M640,113 H610 V178 H304" marker-end="url(#g)"/>
+  <path class="out" d="M640,203 H610 V178"/>
+  <path class="out" d="M640,289 H610 V203"/>
+  <text class="l" x="312" y="200">gadget WS, PCM16, each gateway's voice</text>
+
+  <text class="s" x="20" y="346">Each Echo keeps one gadget socket per gateway and uses it both ways. Hermes needs no changes.</text>
+  <text class="s" x="20" y="366">Gateways can also speak unprompted (send_message, gadget_speak, cron); dot-gadget plays one clip at a time.</text>
+  <text class="s" x="20" y="386">Fallback if the on-device benchmark fails: a LAN host does STT, language and speaker ID; routing stays on the Echo.</text>
+</svg>
