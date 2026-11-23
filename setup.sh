@@ -14,6 +14,8 @@ set -euo pipefail
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # 5038 is the ADB server of LibreEcho's flashing container; it leaves the host's usual 5037 alone.
 export ADB_PORT=${ADB_PORT:-5038}
+[[ $ADB_PORT =~ ^[0-9]{1,5}$ ]] && (( ADB_PORT > 0 && ADB_PORT < 65536 )) ||
+    { echo "ERROR: ADB_PORT must be a port number, got '$ADB_PORT'" >&2; exit 2; }
 
 usage() { sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -25,7 +27,7 @@ cmd=${1:-}; shift || true
 # The one LibreEcho device to talk to over ADB (or --serial).
 pick_device() {
     [[ -n $serial ]] && return
-    mapfile -t found < <(adb -P $ADB_PORT devices | awk 'NR > 1 && $2 == "device" {print $1}')
+    mapfile -t found < <(adb -P "$ADB_PORT" devices | awk 'NR > 1 && $2 == "device" {print $1}')
     case ${#found[@]} in
         1) serial=${found[0]} ;;
         0) die "no LibreEcho device on USB ADB (is it booted and plugged in?)" ;;
@@ -35,8 +37,8 @@ pick_device() {
 
 case $cmd in
 devices)
-    adb -P $ADB_PORT devices | awk 'NR > 1 && $2 == "device" {print $1}' | while read -r s; do
-        info=$(adb -P $ADB_PORT -s "$s" shell 'ip -4 addr show wlan0 | sed -n "s/.*inet \([0-9.]*\).*/\1/p";
+    adb -P "$ADB_PORT" devices | awk 'NR > 1 && $2 == "device" {print $1}' | while read -r s; do
+        info=$(adb -P "$ADB_PORT" -s "$s" shell 'ip -4 addr show wlan0 | sed -n "s/.*inet \([0-9.]*\).*/\1/p";
             [ -f /data/libreecho/local/enabled ] && [ -x /data/libreecho/local/services/hermes-gadget/run ] && echo speaker' \
             </dev/null | tr -d '\r' | paste -sd' ')
         echo "$s  ${info:-?}"
@@ -53,7 +55,7 @@ speaker)
     # only what came after its last start, once every upstream has reported.
     for _ in $(seq 20); do
         sleep 1
-        since=$(adb -P $ADB_PORT -s "$serial" shell 'tail -50 /var/log/libreecho/local/hermes-gadget.log' \
+        since=$(adb -P "$ADB_PORT" -s "$serial" shell 'tail -50 /var/log/libreecho/local/hermes-gadget.log' \
             | tr -d '\r' | awk '/hermes-gadget-dot .*upstream/ {buf = ""} {buf = buf $0 "\n"} END {printf "%s", buf}') || true
         [[ $(grep -cE 'paired=|PAIRING CODE' <<<"$since") -ge $# ]] && break
     done
@@ -66,7 +68,7 @@ root-ssh)
     ;;
 logs)
     pick_device
-    adb -P $ADB_PORT -s "$serial" shell tail -f /var/log/libreecho/local/hermes-gadget.log
+    adb -P "$ADB_PORT" -s "$serial" shell tail -f /var/log/libreecho/local/hermes-gadget.log
     ;;
 -h|--help|help) usage 0 ;;
 *) usage ;;
