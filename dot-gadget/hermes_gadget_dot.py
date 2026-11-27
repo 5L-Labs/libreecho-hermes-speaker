@@ -8,6 +8,14 @@ delivery or the gadget home channel. Speaker audio arrives as mono PCM16 at
 48 kHz and is written to LibreEcho's announcement bus, a FIFO of S16LE 48 kHz
 stereo that ducks music while it plays.
 
+With "voice" in the config, the Dot also takes voice input for one upstream.
+LibreEcho keeps its wake word and end-of-speech detection; in its Custom voice
+pipeline it streams each recording to a Wyoming STT server, and this client is
+that server (VoiceRelay). It forwards the recording to the upstream as a gadget
+utterance and answers LibreEcho with an empty transcript, so LibreEcho's own
+assistant stays quiet. Hermes transcribes it and speaks the reply back on the
+same connection. --voice-setup switches LibreEcho's settings for this.
+
 Needs Python 3.10+ and websockets. Runs as root under libreecho-local.
 """
 
@@ -29,7 +37,7 @@ from pathlib import Path
 from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 SUBPROTOCOL = "hermes-gadget.v1"
 AUTH_CONTEXT = b"hermes-gadget/v1|"
 CHANNEL_AUDIO = 0x01
@@ -38,6 +46,15 @@ GAP = bytes(2048 * 4)  # ttsd's underrun filler: 2048 stereo frames of silence
 GAP_WAIT_S = 0.04
 MAX_GAP_S = 5.0
 MAX_STREAM_S = 600  # longest message kept (10 min); the rest is dropped
+MIC_RATE = 16000  # what LibreEcho's sttd streams: mono PCM16
+MIC_FRAME = MIC_RATE * 2 * 40 // 1000  # 40 ms per binary frame, as the hub sends
+WEB_CONFIG = "/data/libreecho/config/web-config.json"
+VOICE_LISTEN = "127.0.0.1:10300"
+# LibreEcho's ttsd refuses to start in the Custom pipeline without a Wyoming TTS server, and agentd
+# waits for ttsd. VoiceRelay serves one here that returns empty audio: LibreEcho's assistant never
+# gets a transcript to answer, and Hermes speaks through the gadget connection instead.
+VOICE_TTS_LISTEN = "127.0.0.1:10301"
+VOICE_MAX_UTTERANCE_MS = 15000  # LibreEcho's default, 6000, cuts a longer question off
 
 log = logging.getLogger("hermes-gadget-dot")
 
@@ -217,14 +234,21 @@ class Device:
         self.stream_id: int | None = None  # protocol stream id still receiving frames
         self.stream: Stream | None = None  # the most recent stream, which may still be playing
         self.frames = 0
+        self.voice = False  # this upstream takes the Dot's voice input (see VoiceRelay)
+        self.ws = None  # the open, authenticated connection, if any
+        self.mic: dict | None = None  # the recording being sent: ws, stream, seq, bytes
+        self.mic_count = 0
+        self.mic_ended_at: float | None = None  # when the last recording ended, until its reply plays
 
     def hello(self) -> dict:
+        caps = {"speaker": {"rate": RATE, "format": "pcm16", "formats": ["pcm16"],
+                            "buffer_ms": int(self.cfg.get("buffer_ms", 4000))}}
+        if self.voice:
+            caps["mic"] = {"rate": MIC_RATE, "format": "pcm16"}
         msg = {
             "type": "hello", "proto": 1, "device_id": self.device_id,
             "name": self.cfg.get("name", "Echo Dot"), "board": "libreecho-biscuit", "firmware": VERSION,
-            "caps": {"speaker": {"rate": RATE, "format": "pcm16", "formats": ["pcm16"],
-                                 "buffer_ms": int(self.cfg.get("buffer_ms", 4000))}},
-            "actions": [],
+            "caps": caps, "actions": [],
         }
         if self.cfg.get("token"):
             msg["token"] = self.cfg["token"]
@@ -253,6 +277,7 @@ class Device:
                     await ws.send(json.dumps(auth))
                 elif kind == "welcome":
                     heartbeat = int(msg.get("heartbeat_s") or 20)
+                    self.ws = ws
                     log.info("[%s] connected as %s, paired=%s", self.upstream, self.device_id, msg.get("paired"))
                 elif kind == "pairing":
                     log.warning("[%s] PAIRING CODE %s: on that Hermes host run `%s` (or `hermes gadget pair`)",
@@ -296,6 +321,69 @@ class Device:
         self.stream_id = self.stream.protocol_id = msg.get("stream")
         self.frames = 0
         log.info("[%s] audio.start stream %s", self.upstream, self.stream_id)
+        if self.mic_ended_at is not None:
+            log.info("[%s] reply audio %.2f s after the recording ended", self.upstream,
+                     time.monotonic() - self.mic_ended_at)
+            self.mic_ended_at = None
+
+    async def mic_start(self) -> bool:
+        """Open an utterance on this upstream; False when it is not connected."""
+        ws = self.ws
+        if ws is None:
+            log.warning("[%s] voice input while not connected; dropping the recording", self.upstream)
+            return False
+        self.mic_count += 1
+        self.mic = {"ws": ws, "id": f"w{self.mic_count}", "stream": self.mic_count % 255 + 1, "seq": 0,
+                    "bytes": 0, "buf": b""}
+        self.mic_ended_at = None
+        return await self._mic_send(json.dumps({
+            "type": "audio.start", "id": self.mic["id"], "stream": self.mic["stream"],
+            "rate": MIC_RATE, "format": "pcm16", "mode": "hold"}))
+
+    async def mic_write(self, pcm: bytes) -> None:
+        if self.mic is None:
+            return
+        self.mic["bytes"] += len(pcm)
+        buf = self.mic["buf"] + pcm
+        while len(buf) >= MIC_FRAME and self.mic is not None:
+            await self._mic_frame(buf[:MIC_FRAME])
+            buf = buf[MIC_FRAME:]
+        if self.mic is not None:
+            self.mic["buf"] = buf
+
+    async def mic_end(self) -> None:
+        if self.mic is None:
+            return
+        if self.mic["buf"]:
+            await self._mic_frame(self.mic["buf"][: len(self.mic["buf"]) & ~1])
+        if self.mic is None:
+            return
+        ms = self.mic["bytes"] * 1000 // (MIC_RATE * 2)
+        if await self._mic_send(json.dumps({"type": "audio.end", "id": self.mic["id"],
+                                            "stream": self.mic["stream"], "duration_ms": ms})):
+            log.info("[%s] sent recording %s: %.2f s", self.upstream, self.mic["id"], ms / 1000)
+            self.mic_ended_at = time.monotonic()
+        self.mic = None
+
+    async def _mic_frame(self, payload: bytes) -> None:
+        header = struct.pack("<BBH", CHANNEL_AUDIO, self.mic["stream"], self.mic["seq"] & 0xFFFF)
+        self.mic["seq"] += 1
+        await self._mic_send(header + payload)
+
+    async def _mic_send(self, data) -> bool:
+        # A recording belongs to the connection it started on; after a reconnect the rest is dropped.
+        if self.mic is None or self.mic["ws"] is not self.ws:
+            if self.mic is not None:
+                log.warning("[%s] connection changed during recording %s; dropped", self.upstream, self.mic["id"])
+            self.mic = None
+            return False
+        try:
+            await self.ws.send(data)
+            return True
+        except WebSocketException as exc:
+            log.warning("[%s] recording %s not sent: %s", self.upstream, self.mic["id"], exc)
+            self.mic = None
+            return False
 
     def on_binary(self, data: bytes) -> None:
         if len(data) < 4:
@@ -315,11 +403,108 @@ class Device:
             except (OSError, WebSocketException, asyncio.TimeoutError, ValueError,
                     KeyError, TypeError, AttributeError) as exc:
                 log.warning("[%s] connection to %s ended: %s", self.upstream, self.cfg["server"], exc)
+            self.ws = None
             if self.stream is not None:
                 self.writer.abort(self.stream)
             self.stream_id = self.stream = None
             backoff = 1 if time.monotonic() - started > 60 else min(backoff * 2, 60)
             await asyncio.sleep(backoff)
+
+
+class VoiceRelay:
+    """The Wyoming STT server LibreEcho's sttd streams recordings to in its Custom pipeline.
+
+    Each recording (transcribe, audio-start, audio-chunk..., audio-stop) goes to one upstream
+    as a gadget utterance. sttd then gets an empty transcript, which ends LibreEcho's own
+    voice turn as "speech not recognised" before its assistant runs or speaks.
+    """
+
+    def __init__(self, device: Device):
+        self.device = device
+
+    async def serve(self) -> None:
+        servers = []
+        for listen in (VOICE_LISTEN, VOICE_TTS_LISTEN):
+            host, port = listen.rsplit(":", 1)
+            servers.append(await asyncio.start_server(self.handle, host, int(port)))
+        log.info("voice input from LibreEcho on %s goes to upstream %s (silent TTS for LibreEcho on %s)",
+                 VOICE_LISTEN, self.device.upstream, VOICE_TTS_LISTEN)
+        await asyncio.gather(*(s.serve_forever() for s in servers))
+
+    @staticmethod
+    async def _read_event(r: asyncio.StreamReader):
+        line = await r.readline()
+        if not line:
+            return None
+        hdr = json.loads(line)
+        data = hdr.get("data") or {}
+        if hdr.get("data_length"):
+            data = json.loads(await r.readexactly(int(hdr["data_length"])))
+        payload = await r.readexactly(int(hdr["payload_length"])) if hdr.get("payload_length") else b""
+        return hdr.get("type"), data, payload
+
+    @staticmethod
+    def _event(kind: str, data: dict) -> bytes:
+        body = json.dumps(data).encode()
+        return json.dumps({"type": kind, "data_length": len(body)}).encode() + b"\n" + body
+
+    async def handle(self, r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
+        dev, sending = self.device, False
+        try:
+            while (event := await self._read_event(r)) is not None:
+                kind, data, payload = event
+                if kind == "describe":
+                    w.write(self._event("info", {
+                        "asr": [{"name": "hermes-gadget", "installed": True,
+                                 "models": [{"name": "hermes", "languages": []}]}],
+                        "tts": [{"name": "hermes-gadget-silent", "installed": True,
+                                 "voices": [{"name": "silent", "languages": []}]}]}))
+                elif kind == "synthesize":
+                    fmt = {"rate": MIC_RATE, "width": 2, "channels": 1}
+                    w.write(self._event("audio-start", fmt) + self._event("audio-stop", {}))
+                elif kind == "audio-start":
+                    fmt = (data.get("rate"), data.get("width"), data.get("channels"))
+                    if fmt != (MIC_RATE, 2, 1):
+                        log.error("voice input in %s, not 16 kHz 16-bit mono; dropping it", fmt)
+                    else:
+                        sending = await dev.mic_start()
+                elif kind == "audio-chunk" and sending:
+                    await dev.mic_write(payload)
+                elif kind == "audio-stop":
+                    if sending:
+                        await dev.mic_end()
+                    sending = False
+                    w.write(self._event("transcript", {"text": ""}))
+                await w.drain()
+        except (OSError, ValueError, asyncio.IncompleteReadError) as exc:
+            log.warning("voice input connection from sttd failed: %s", exc)
+        finally:
+            if sending:
+                dev.mic = None  # sttd went away mid-recording: the hub drops an utterance with no end
+            w.close()
+
+
+def voice_setup(mode: str, path: str = WEB_CONFIG) -> None:
+    """Point LibreEcho's STT at VoiceRelay ("on") or back at its own engine ("off"), then restart it."""
+    cfg = json.loads(Path(path).read_text())
+    if mode == "on":
+        if cfg.get("voice_pipeline_mode") != "custom":
+            cfg["voice_pipeline_previous_mode"] = cfg.get("voice_pipeline_mode", "local")
+        cfg.update(voice_pipeline_mode="custom", stt_wyoming_uri="tcp://" + VOICE_LISTEN,
+                   tts_wyoming_uri="tcp://" + VOICE_TTS_LISTEN,
+                   stt_max_utterance_ms=max(int(cfg.get("stt_max_utterance_ms") or 0), VOICE_MAX_UTTERANCE_MS))
+    else:
+        cfg.update(voice_pipeline_mode=cfg.get("voice_pipeline_previous_mode") or "local",
+                   voice_pipeline_previous_mode="", stt_wyoming_uri="", tts_wyoming_uri="")
+    tmp = path + ".voice.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(cfg, f, indent=2)
+    os.replace(tmp, path)
+    # Each reads the pipeline when it starts; agentd needs ttsd's socket, so it goes last.
+    for svc in ("sttd", "ttsd", "agentd"):
+        os.system(f"/etc/init.d/libreecho-{svc}.init restart >/dev/null 2>&1")
+    print(f"LibreEcho voice pipeline {cfg['voice_pipeline_mode']}, STT at {cfg.get('stt_wyoming_uri') or 'built-in'}")
 
 
 def upstreams(cfg: dict) -> "list[dict]":
@@ -341,7 +526,9 @@ def upstreams(cfg: dict) -> "list[dict]":
 
 
 async def run_all(devices: "list[Device]") -> None:
-    await asyncio.gather(*(d.run_forever() for d in devices))
+    tasks = [d.run_forever() for d in devices]
+    tasks += [VoiceRelay(d).serve() for d in devices if d.voice]
+    await asyncio.gather(*tasks)
 
 
 def main() -> None:
@@ -351,9 +538,18 @@ def main() -> None:
     p.add_argument("--bus", default="/run/libreecho-audio/announcement.pcm")
     p.add_argument("--bus-status", default="/run/libreecho-audio/status.json")
     p.add_argument("--print-ids", action="store_true", help="print each upstream's device id and exit")
+    p.add_argument("--voice-setup", choices=("on", "off"),
+                   help="switch LibreEcho's STT to this client's voice relay, or back, and exit")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    cfgs = upstreams(json.loads(args.config.read_text()))
+    if args.voice_setup:
+        voice_setup(args.voice_setup)
+        return
+    raw = json.loads(args.config.read_text())
+    cfgs = upstreams(raw)
+    voice = raw.get("voice")  # the upstream that takes voice input, e.g. "hermes-03"
+    if voice is not None and voice not in [c["upstream"] for c in cfgs]:
+        raise SystemExit(f"voice upstream {voice!r} is not one of the upstreams")
     # One key per upstream: a Hermes host learns the key it enrolls, so a shared key
     # would let one Hermes impersonate this Dot to another.
     identities = [device_identity(args.state, c["upstream"]) for c in cfgs]
@@ -368,6 +564,7 @@ def main() -> None:
         log.info("hermes-gadget-dot %s, upstream %s, device %s, server %s",
                  VERSION, c["upstream"], device_id, c["server"])
         devices.append(Device(c, key, device_id, writer))
+        devices[-1].voice = c["upstream"] == voice
     asyncio.run(run_all(devices))
 
 

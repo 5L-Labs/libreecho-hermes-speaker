@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Install the Hermes Gadget client on a LibreEcho Echo Dot over ADB.
 #
-#   dot-gadget/install.sh "Office Echo" hermes=ws://HERMES_HOST:PORT/gadget [NAME=URL ...] [--enable]
+#   dot-gadget/install.sh "Office Echo" hermes=ws://HERMES_HOST:PORT/gadget [NAME=URL ...] [--voice NAME] [--enable]
+#
+# --voice NAME sends the Dot's voice input (LibreEcho's wake word, then the
+# recording) to upstream NAME and switches LibreEcho's STT to this client.
 #
 # Each NAME=URL is one upstream Hermes gateway; the Dot pairs with each one
 # separately, under its own device key, and plays their messages in turn.
@@ -12,14 +15,17 @@
 # The device key in state/ is kept across reinstalls.
 set -euo pipefail
 
-usage='usage: install.sh DEVICE_NAME UPSTREAM=WS_URL [UPSTREAM=WS_URL ...] [--enable]'
+usage='usage: install.sh DEVICE_NAME UPSTREAM=WS_URL [UPSTREAM=WS_URL ...] [--voice UPSTREAM] [--enable]'
 name=${1:?$usage}
 shift
 enable=
+voice=
 upstreams=()
-for arg in "$@"; do
+while [[ $# -gt 0 ]]; do
+    arg=$1; shift
     case $arg in
         --enable) enable=--enable ;;
+        --voice) voice=${1:?--voice needs an upstream NAME}; shift ;;
         *=ws://*|*=wss://*)
             [[ ${arg%%=*} =~ ^[A-Za-z0-9._-]+$ ]] || { echo "upstream NAME may use only letters, digits, . _ -: ${arg%%=*}" >&2; exit 2; }
             upstreams+=("$arg") ;;
@@ -59,8 +65,13 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 python3 -c 'import json, sys
-ups = [dict(zip(("name", "server"), a.split("=", 1))) for a in sys.argv[2:]]
-print(json.dumps({"name": sys.argv[1], "upstreams": ups}, indent=2))' "$name" "${upstreams[@]}" > "$tmp/config.json"
+ups = [dict(zip(("name", "server"), a.split("=", 1))) for a in sys.argv[3:]]
+cfg = {"name": sys.argv[1], "upstreams": ups}
+if sys.argv[2]:
+    if sys.argv[2] not in [u["name"] for u in ups]:
+        sys.exit(f"--voice {sys.argv[2]} is not one of the upstreams")
+    cfg["voice"] = sys.argv[2]
+print(json.dumps(cfg, indent=2))' "$name" "$voice" "${upstreams[@]}" > "$tmp/config.json"
 
 "${adb[@]}" shell "mkdir -p $app/state $svc && chmod 700 $app/state && rm -rf $app/py.new && mkdir $app/py.new"
 "${adb[@]}" push "$build/py.tgz" "$app/py.tgz" >/dev/null
@@ -72,6 +83,8 @@ print(json.dumps({"name": sys.argv[1], "upstreams": ups}, indent=2))' "$name" "$
 # device's SSH users (adb shell runs with umask 0, and tar keeps archive owners).
 "${adb[@]}" shell "chown -R 0:0 /data/libreecho/local && chmod -R go-w /data/libreecho/local \
     && chmod 755 $svc/run && chmod 600 $app/config.json && chmod 700 $app/state"
+# LibreEcho's STT follows the config: to this client with --voice, back to its own engine without.
+"${adb[@]}" shell "$svc/run --voice-setup $([[ -n $voice ]] && echo on || echo off)" | tr -d '\r'
 echo "Device ids (upstream, id, server):"
 "${adb[@]}" shell "$svc/run --print-ids" | tr -d '\r'
 if [[ $enable == --enable ]]; then

@@ -2,8 +2,9 @@
 # Turn a flashed LibreEcho Echo / Echo Dot 2nd Gen into a Hermes speaker, over USB ADB.
 #
 #   ./setup.sh devices                     list LibreEcho devices on USB (ADB)
-#   ./setup.sh speaker NAME UP=ws://... [UP=ws://...]
-#                                          make it a Hermes speaker (dot-gadget), started now and at boot
+#   ./setup.sh speaker NAME UP=ws://... [UP=ws://...] [--voice UP]
+#                                          make it a Hermes speaker (dot-gadget), started now and at boot;
+#                                          --voice also sends its wake-word voice input to Hermes UP
 #   ./setup.sh logs                        follow the speaker log
 #   ./setup.sh root-ssh KEY.pub [...]      root SSH with these keys on port 2222, so USB isn't needed
 #
@@ -17,7 +18,7 @@ export ADB_PORT=${ADB_PORT:-5038}
 [[ $ADB_PORT =~ ^[0-9]{1,5}$ ]] && (( ADB_PORT > 0 && ADB_PORT < 65536 )) ||
     { echo "ERROR: ADB_PORT must be a port number, got '$ADB_PORT'" >&2; exit 2; }
 
-usage() { sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 serial=
@@ -47,6 +48,7 @@ devices)
 speaker)
     [[ $# -ge 2 ]] || die "usage: ./setup.sh speaker \"Kitchen Echo\" NAME=ws://HOST:PORT/gadget [NAME=ws://... ...]"
     name=$1; shift
+    n_up=$(printf '%s\n' "$@" | grep -c '=ws' || true)
     pick_device
     ADB_SERIAL=$serial "$here/dot-gadget/install.sh" "$name" "$@" --enable
     echo
@@ -57,7 +59,7 @@ speaker)
         sleep 1
         since=$(adb -P "$ADB_PORT" -s "$serial" shell 'tail -50 /var/log/libreecho/local/hermes-gadget.log' \
             | tr -d '\r' | awk '/hermes-gadget-dot .*upstream/ {buf = ""} {buf = buf $0 "\n"} END {printf "%s", buf}') || true
-        [[ $(grep -cE 'paired=|PAIRING CODE' <<<"$since") -ge $# ]] && break
+        [[ $(grep -cE 'paired=|PAIRING CODE' <<<"$since") -ge $n_up ]] && break
     done
     grep -E 'PAIRING CODE|paired=' <<<"$since" || echo "  none yet; watch ./setup.sh logs"
     ;;

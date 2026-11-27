@@ -30,6 +30,7 @@ uses; set `ADB_PORT` to use another.
 ```sh
 for f in setup.sh dot-gadget/install.sh dot-gadget/run root-ssh/install.sh root-ssh/run; do bash -n "$f"; done
 python3 -m py_compile dot-gadget/hermes_gadget_dot.py
+python3 tests/test_voice_relay.py   # voice input end to end against a fake gateway; needs websockets
 ```
 
 ## Hermes speaker
@@ -38,8 +39,8 @@ python3 -m py_compile dot-gadget/hermes_gadget_dot.py
 speaker, so Hermes can speak on it on demand: `send_message` to `gadget:<id>`,
 cron delivery, or the gadget home channel. Hermes renders speech with its own
 TTS and streams PCM; the client plays it on LibreEcho's announcement bus, which
-ducks music and waits for the device's own speech. No microphone or wake word
-is involved.
+ducks music and waits for the device's own speech. Voice input is optional; see
+[Talking to Hermes](#talking-to-hermes).
 
 With the device booted and on USB (host `adb`, `curl` and `python3`):
 
@@ -75,6 +76,35 @@ use it on a trusted network. `wss://` verifies the gateway against the device's
 own CA bundle. To stop all local services remove
 `/data/libreecho/local/enabled`; to uninstall also remove
 `/data/libreecho/local/hermes-gadget` and `/data/libreecho/local/services/hermes-gadget`.
+
+## Talking to Hermes
+
+`--voice NAME` makes upstream `NAME` take the device's voice input as well:
+
+```sh
+./setup.sh speaker "Kitchen Echo" hermes-03=ws://HOST:8766/gadget hermes-01=ws://HOST:8767/gadget --voice hermes-03
+```
+
+Say LibreEcho's wake word ("Alexa" by default), then your question. LibreEcho
+keeps its own wake word and end-of-speech detection. The installer switches its
+voice pipeline to Custom, with speech-to-text at `tcp://127.0.0.1:10300`; the
+client serves that and forwards each recording to Hermes as a gadget voice
+message. Hermes transcribes it with its own `stt` settings, runs the turn in the
+device's chat, and speaks the reply back on the same device in its own voice.
+Nothing changes on the Hermes side; the device only adds `caps.mic` to its
+`hello` for that upstream.
+
+- LibreEcho's own assistant is answered with an empty transcript, so it stays
+  quiet. In Custom mode its own speech is silent too (the client serves its TTS
+  at `127.0.0.1:10301` with empty audio, because `ttsd` won't start without
+  one); chimes still play.
+- Recordings may run up to 15 s (LibreEcho's default is 6 s).
+- Transcription language is Hermes's: set `stt.language`, or
+  `platforms.gadget.extra.stt_language`, on the Hermes host.
+- To turn voice input off, rerun `./setup.sh speaker` without `--voice`, which
+  puts LibreEcho's pipeline back where it was.
+- The log shows `sent recording`, the `transcript`, and `reply audio N s after
+  the recording ended` for each turn.
 
 ## Root over the network
 
