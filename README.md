@@ -1,129 +1,72 @@
 # libreecho-hermes-speaker
 
-[5L Labs](https://github.com/5L-Labs) community tooling, [MIT](LICENSE).
-Turns an Amazon Echo / Echo Dot **2nd Gen** running [LibreEcho](https://github.com/aslater3/LibreEcho)
-into a speaker that one or more [Hermes](https://github.com/NousResearch/hermes-agent)
-agents can talk through, and adds key-only root SSH so the device can leave USB.
+Make an Echo Dot 2nd Gen running [LibreEcho](https://github.com/aslater3/LibreEcho) a speaker, and optionally a microphone, for one or more [Hermes](https://github.com/NousResearch/hermes-agent) agents.
 
-## Flash first
+1. **Get the gadget URL from Hermes:** `hermes gadget info`
+2. **Plug the Dot in over USB**, once
+3. **Run** `./setup.sh speaker "Kitchen Echo" hermes-03=ws://HOST:PORT/gadget --voice hermes-03`
 
-Flash with LibreEcho's own installer: the [install guide](https://github.com/aslater3/LibreEcho/blob/main/docs/install/README.md),
-or on Linux its rootless Podman route, [`docs/install/podman.md`](https://github.com/aslater3/LibreEcho/blob/release/0.14.6/docs/install/podman.md)
-(adopted from this repo in LibreEcho 0.14.6). Finish the device's setup page and
-leave it booted on USB. Nothing here flashes or erases a device.
-
-## Quick reference
-
-```sh
-./setup.sh devices                  # LibreEcho devices on USB: serial, Wi-Fi IP, "speaker" if set up
-./setup.sh speaker "Kitchen Echo" hermes=ws://HERMES_HOST:PORT/gadget   # Hermes speaker
-./setup.sh logs                     # follow the speaker log
-./setup.sh root-ssh KEY.pub         # key-only root SSH on port 2222, so the device can leave USB
-./setup.sh --serial SERIAL logs     # pick one device when several are on USB
+```mermaid
+sequenceDiagram
+    participant H as Hermes host
+    participant L as Your laptop
+    participant D as Echo Dot (LibreEcho)
+    Note over H: 1. Enable the gadget platform
+    L->>H: hermes gadget info
+    H-->>L: ws://HOST:PORT/gadget
+    Note over L,D: 2. USB, first setup only
+    L->>D: ./setup.sh speaker NAME up=ws://... (over ADB)
+    D->>H: connects, shows pairing code
+    L->>H: hermes pairing approve gadget CODE
+    Note over D,H: 3. From now on, Wi-Fi only
+    D->>H: "Alexa, ..." recording (with --voice)
+    H-->>D: reply in Hermes's voice
+    H-->>D: send_message / cron to gadget:ID
 ```
 
-`setup.sh` talks to ADB server port 5038, the one LibreEcho's flashing container
-uses; set `ADB_PORT` to use another.
+## 1. Get the URL from Hermes
 
-## Checks
-
-```sh
-for f in setup.sh dot-gadget/install.sh dot-gadget/run root-ssh/install.sh root-ssh/run; do bash -n "$f"; done
-python3 -m py_compile dot-gadget/hermes_gadget_dot.py
-python3 tests/test_voice_relay.py   # voice input end to end against a fake gateway; needs websockets
-```
-
-## Hermes speaker
-
-`dot-gadget/` makes a flashed device a [Hermes Gadget](https://github.com/Adolanium/hermes-gadget-sdk)
-speaker, so Hermes can speak on it on demand: `send_message` to `gadget:<id>`,
-cron delivery, or the gadget home channel. Hermes renders speech with its own
-TTS and streams PCM; the client plays it on LibreEcho's announcement bus, which
-ducks music and waits for the device's own speech. Voice input is optional; see
-[Talking to Hermes](#talking-to-hermes).
-
-With the device booted and on USB (host `adb`, `curl` and `python3`):
+Install and enable the gadget plugin on the Hermes host ([Hermes integration guide](https://github.com/Adolanium/hermes-gadget-sdk/blob/main/docs/hermes-integration.md)):
 
 ```sh
-./setup.sh speaker "Kitchen Echo" hermes-a=ws://HOST_A:PORT/gadget hermes-b=ws://HOST_B:PORT/gadget
+hermes plugins install "https://github.com/Adolanium/hermes-gadget-sdk.git#plugin" --enable
+hermes gadget info        # prints "device URL: ws://...:8765/gadget"
 ```
 
-Each `NAME=URL` is one Hermes gateway's gadget endpoint (`NAME`: letters, digits,
-`.`, `_`, `-`). The device connects to
-all of them, with **its own key and device id per upstream** (a shared key would
-let one Hermes impersonate the device to another), and prints a pairing code per
-upstream. Approve each on its Hermes host:
+In a container, use the host's published port instead of the container IP it prints.
 
-```sh
-hermes pairing approve gadget CODE
-hermes gadget devices
-```
+## 2. Plug in over USB
 
-Messages play one at a time in arrival order. A newer message from the same
-upstream replaces one that is still arriving, never one that has fully arrived;
-another upstream's message waits its turn. One message is capped at 600 s.
+Flash with [LibreEcho's installer](https://github.com/aslater3/LibreEcho/blob/main/docs/install/README.md) and leave the Dot booted on USB. `./setup.sh devices` should list it.
 
-It runs on a downloaded Alpine armv7 Python (musl, like LibreEcho; about 47 MB
-on `/data`, packages signature-checked by `apk`) under LibreEcho's
-`libreecho-local` supervisor, which survives reboots and OTA updates, restarts
-it with backoff, and disables local services after three boots that do not
-stay up for 180 s. Device keys stay in `/data/libreecho/local/hermes-gadget/state`
-across reinstalls; rerun the command to change the name or upstreams.
-Logs: `./setup.sh logs`.
+USB is needed because LibreEcho gives root only over ADB, and installing needs root. After setup the Dot runs over Wi-Fi and survives reboots. You need USB again only to change the config, unless you add [root SSH](#root-ssh-optional).
 
-The connection is plain `ws://` unless the gateway terminates TLS (`wss://`), so
-use it on a trusted network. `wss://` verifies the gateway against the device's
-own CA bundle. To stop all local services remove
-`/data/libreecho/local/enabled`; to uninstall also remove
-`/data/libreecho/local/hermes-gadget` and `/data/libreecho/local/services/hermes-gadget`.
-
-## Talking to Hermes
-
-`--voice NAME` makes upstream `NAME` take the device's voice input as well:
+## 3. Run setup
 
 ```sh
 ./setup.sh speaker "Kitchen Echo" hermes-03=ws://HOST:8766/gadget hermes-01=ws://HOST:8767/gadget --voice hermes-03
 ```
 
-Say LibreEcho's wake word ("Alexa" by default), then your question. LibreEcho
-keeps its own wake word and end-of-speech detection. The installer switches its
-voice pipeline to Custom, with speech-to-text at `tcp://127.0.0.1:10300`; the
-client serves that and forwards each recording to Hermes as a gadget voice
-message. Hermes transcribes it with its own `stt` settings, runs the turn in the
-device's chat, and speaks the reply back on the same device in its own voice.
-Nothing changes on the Hermes side; the device only adds `caps.mic` to its
-`hello` for that upstream.
+- Each `NAME=URL` is one Hermes. The Dot pairs with each separately, with its own key, and plays their messages one at a time.
+- Approve each pairing code on its Hermes: `hermes pairing approve gadget CODE`.
+- `--voice NAME` sends "Alexa, …" to that one Hermes, which answers on the Dot. Leave it out for speaker only; rerun without it to turn voice off.
+- Logs: `./setup.sh logs`. With several Dots on USB, add `--serial SERIAL`.
 
-- LibreEcho's own assistant is answered with an empty transcript, so it stays
-  quiet. In Custom mode its own speech is silent too (the client serves its TTS
-  at `127.0.0.1:10301` with empty audio, because `ttsd` won't start without
-  one); chimes still play.
-- Recordings may run up to 15 s (LibreEcho's default is 6 s).
-- Transcription language is Hermes's: set `stt.language`, or
-  `platforms.gadget.extra.stt_language`, on the Hermes host.
-- To turn voice input off, rerun the same `./setup.sh speaker NAME UP=ws://...`
-  command without `--voice NAME`, which
-  puts LibreEcho's pipeline back where it was.
-- The log shows `sent recording`, the `transcript`, and `reply audio N s after
-  the recording ended` for each turn.
+## Notes
 
-## Root over the network
+- **Voice:** LibreEcho keeps its wake word and end-of-speech detection; the client stands in as its speech-to-text server and forwards the recording. Hermes transcribes it with its own `stt` settings. LibreEcho's own assistant stays silent. Recordings run up to 15 s.
+- **One wake word, one voice target.** Speech goes to the `--voice` upstream; every upstream can still speak.
+- **Security:** plain `ws://` is for a trusted network; use `wss://` otherwise.
+- **Uninstall:** remove `/data/libreecho/local/hermes-gadget` and `/data/libreecho/local/services/hermes-gadget`.
+- **Checks:** `python3 tests/test_voice_relay.py` (needs `websockets`).
 
-LibreEcho's own SSH (port 22) accepts only passwords and never root, so changes
-under `/data/libreecho` otherwise need USB ADB. After `./setup.sh speaker` has
-run once (it fetches `apk`), add a second, key-only root SSH server. It creates
-`/data/libreecho/local/enabled`, which starts **all** installed local services,
-including an installed speaker:
+## Root SSH (optional)
+
+For development: key-only root SSH on port 2222, so config changes don't need USB.
 
 ```sh
 ./setup.sh root-ssh ~/.ssh/id_ed25519.pub
 ssh -p 2222 root@DEVICE_IP
 ```
 
-It is Alpine's musl Dropbear for armv7 under the same `libreecho-local`
-supervisor, on port **2222**, **public keys only**, no port forwarding. Rerunning
-replaces the keys; a running server picks them up at once. Dropbear's three
-libraries are linked into the RAM-backed `/lib` at each start. Anyone holding a
-listed key is root on the device. To remove it, delete
-`/data/libreecho/local/services/root-ssh` and `/data/libreecho/local/root-ssh`,
-then reboot.
+Anyone with a listed key is root on the device. Remove `/data/libreecho/local/services/root-ssh` and reboot to turn it off.
