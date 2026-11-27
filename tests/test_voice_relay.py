@@ -72,8 +72,7 @@ async def main() -> None:
                 except OSError:
                     continue
             else:
-                proc.terminate()
-                raise AssertionError("relay never listened on 10300:\n" + proc.communicate(timeout=5)[0].decode())
+                raise AssertionError("relay never listened on 10300")
             for _ in range(2):  # both upstreams welcomed before the recording starts
                 await asyncio.wait_for(welcomed.acquire(), 10)
 
@@ -107,9 +106,13 @@ async def main() -> None:
             assert kinds == ["audio-start", "audio-stop"], kinds
             tw.close()
             await asyncio.sleep(0.5)  # bus writer drains the reply
-        finally:
+        except AssertionError as exc:
             proc.terminate()
-            out = proc.communicate(timeout=5)[0].decode()
+            raise AssertionError(f"{exc}\nclient output:\n{proc.communicate(timeout=5)[0].decode()}") from None
+        finally:
+            if proc.returncode is None:  # still running, or not yet collected
+                proc.terminate()
+                out = proc.communicate(timeout=5)[0].decode()
 
     mics = {path: "mic" in h["caps"] for path, h in got["hello"]}
     assert mics == {"/h03": True, "/h01": False}, f"caps.mic must be on hermes-03 only: {mics}"
