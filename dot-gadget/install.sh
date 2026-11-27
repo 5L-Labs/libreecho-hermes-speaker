@@ -33,6 +33,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 [[ ${#upstreams[@]} -gt 0 ]] || { echo "$usage" >&2; exit 2; }
+# Switching LibreEcho's STT to this client only works once the client restarts with the new config.
+[[ -z $voice || $enable == --enable ]] || { echo "--voice needs --enable, which restarts the client" >&2; exit 2; }
 here=$(cd "$(dirname "$0")" && pwd)
 build=$here/build
 adb=(adb -P "${ADB_PORT:-5038}" ${ADB_SERIAL:+-s "$ADB_SERIAL"})  # ADB_SERIAL picks one of several devices

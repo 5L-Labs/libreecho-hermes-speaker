@@ -16,5 +16,5 @@ jobs:
           python3 -m py_compile dot-gadget/hermes_gadget_dot.py
       - name: Voice relay end to end
         run: |
-          pip install -q websockets
+          python3 -m pip install -q websockets==16.0  # what the Dot runs (Alpine py3-websockets)
           python3 tests/test_voice_relay.py

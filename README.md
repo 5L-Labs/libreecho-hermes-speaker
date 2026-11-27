@@ -101,7 +101,8 @@ Nothing changes on the Hermes side; the device only adds `caps.mic` to its
 - Recordings may run up to 15 s (LibreEcho's default is 6 s).
 - Transcription language is Hermes's: set `stt.language`, or
   `platforms.gadget.extra.stt_language`, on the Hermes host.
-- To turn voice input off, rerun `./setup.sh speaker` without `--voice`, which
+- To turn voice input off, rerun the same `./setup.sh speaker NAME UP=ws://...`
+  command without `--voice NAME`, which
   puts LibreEcho's pipeline back where it was.
 - The log shows `sent recording`, the `transcript`, and `reply audio N s after
   the recording ended` for each turn.

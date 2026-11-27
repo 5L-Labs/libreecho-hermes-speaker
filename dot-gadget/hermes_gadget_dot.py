@@ -487,23 +487,30 @@ class VoiceRelay:
 def voice_setup(mode: str, path: str = WEB_CONFIG) -> None:
     """Point LibreEcho's STT at VoiceRelay ("on") or back at its own engine ("off"), then restart it."""
     cfg = json.loads(Path(path).read_text())
+    keys = ("voice_pipeline_mode", "stt_wyoming_uri", "tts_wyoming_uri", "stt_max_utterance_ms")
     if mode == "on":
-        if cfg.get("voice_pipeline_mode") != "custom":
-            cfg["voice_pipeline_previous_mode"] = cfg.get("voice_pipeline_mode", "local")
+        # Keep what was there before the first switch, whatever the mode, so "off" puts it all back.
+        if cfg.get("stt_wyoming_uri") != "tcp://" + VOICE_LISTEN:
+            cfg["hermes_voice_previous"] = {k: cfg.get(k) for k in keys}
         cfg.update(voice_pipeline_mode="custom", stt_wyoming_uri="tcp://" + VOICE_LISTEN,
                    tts_wyoming_uri="tcp://" + VOICE_TTS_LISTEN,
                    stt_max_utterance_ms=max(int(cfg.get("stt_max_utterance_ms") or 0), VOICE_MAX_UTTERANCE_MS))
     else:
-        cfg.update(voice_pipeline_mode=cfg.get("voice_pipeline_previous_mode") or "local",
-                   voice_pipeline_previous_mode="", stt_wyoming_uri="", tts_wyoming_uri="")
+        if cfg.get("stt_wyoming_uri") == "tcp://" + VOICE_LISTEN:
+            prev = cfg.get("hermes_voice_previous") or {"voice_pipeline_mode": "local", "stt_wyoming_uri": "",
+                                                        "tts_wyoming_uri": ""}
+            cfg.update({k: v for k, v in prev.items() if v is not None})
+        cfg.pop("hermes_voice_previous", None)
     tmp = path + ".voice.tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(cfg, f, indent=2)
     os.replace(tmp, path)
     # Each reads the pipeline when it starts; agentd needs ttsd's socket, so it goes last.
-    for svc in ("sttd", "ttsd", "agentd"):
-        os.system(f"/etc/init.d/libreecho-{svc}.init restart >/dev/null 2>&1")
+    failed = [svc for svc in ("sttd", "ttsd", "agentd")
+              if os.system(f"/etc/init.d/libreecho-{svc}.init restart >/dev/null 2>&1") != 0]
+    if failed:
+        raise SystemExit(f"LibreEcho services did not restart: {', '.join(failed)}")
     print(f"LibreEcho voice pipeline {cfg['voice_pipeline_mode']}, STT at {cfg.get('stt_wyoming_uri') or 'built-in'}")
 
 

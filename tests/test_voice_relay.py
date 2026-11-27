@@ -26,7 +26,7 @@ async def main() -> None:
 
     async def gadget(ws):
         hello = json.loads(await ws.recv())
-        got["hello"].append(hello)
+        got["hello"].append((ws.request.path, hello))
         await ws.send(json.dumps({"type": "challenge", "nonce": "n", "enrolled": False}))
         await ws.recv()  # auth
         await ws.send(json.dumps({"type": "welcome", "paired": True, "heartbeat_s": 20}))
@@ -51,8 +51,8 @@ async def main() -> None:
     tmp = Path(tempfile.mkdtemp())
     (tmp / "config.json").write_text(json.dumps({
         "name": "Test Echo", "voice": "hermes-03",
-        "upstreams": [{"name": "hermes-03", "server": f"ws://127.0.0.1:{PORT}/gadget"},
-                      {"name": "hermes-01", "server": f"ws://127.0.0.1:{PORT}/gadget"}]}))
+        "upstreams": [{"name": "hermes-03", "server": f"ws://127.0.0.1:{PORT}/h03"},
+                      {"name": "hermes-01", "server": f"ws://127.0.0.1:{PORT}/h01"}]}))
     bus = tmp / "bus.pcm"
     bus.touch()
     async with serve(gadget, "127.0.0.1", PORT, subprotocols=["hermes-gadget.v1"]):
@@ -107,8 +107,8 @@ async def main() -> None:
             proc.terminate()
             out = proc.communicate(timeout=5)[0].decode()
 
-    mics = sorted("mic" in h["caps"] for h in got["hello"])
-    assert mics == [False, True], f"caps.mic must be on the voice upstream only: {mics}"
+    mics = {path: "mic" in h["caps"] for path, h in got["hello"]}
+    assert mics == {"/h03": True, "/h01": False}, f"caps.mic must be on hermes-03 only: {mics}"
     s, e = got["start"], got["end"]
     assert s["rate"] == 16000 and s["format"] == "pcm16", s
     assert e["stream"] == s["stream"] and e["duration_ms"] == 2000, e
@@ -117,7 +117,7 @@ async def main() -> None:
     assert all(f[0] == 1 and f[1] == s["stream"] for f in got["frames"])
     assert all(len(f) - 4 == 1280 for f in got["frames"][:-1]), "frames should be 40 ms"
     assert b"".join(f[4:] for f in got["frames"]) == pcm, "audio changed on the way"
-    assert bus.stat().st_size >= 4800 * 2 * 2, f"reply not played: {bus.stat().st_size} bytes\n{out}"
+    assert bus.read_bytes() == b"\x01\x02\x01\x02" * 4800, f"reply not played as sent ({bus.stat().st_size} bytes)\n{out}"
     assert "reply audio" in out, out
     print(f"ok: {len(seqs)} frames, 2.00 s relayed, reply played ({bus.stat().st_size} bytes on the bus)")
 
