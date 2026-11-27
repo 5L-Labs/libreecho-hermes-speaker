@@ -56,7 +56,7 @@ async def main() -> None:
     bus = tmp / "bus.pcm"
     bus.touch()
     async with serve(gadget, "127.0.0.1", PORT, subprotocols=["hermes-gadget.v1"]):
-        proc = subprocess.Popen([sys.executable, "-I", "-u", str(CLIENT), "--config", str(tmp / "config.json"),
+        proc = subprocess.Popen([sys.executable, "-u", str(CLIENT), "--config", str(tmp / "config.json"),
                                  "--state", str(tmp / "state"), "--bus", str(bus),
                                  "--bus-status", str(tmp / "none.json")],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -69,7 +69,8 @@ async def main() -> None:
                 except OSError:
                     continue
             else:
-                raise AssertionError("relay never listened on 10300")
+                proc.terminate()
+                raise AssertionError("relay never listened on 10300:\n" + proc.communicate(timeout=5)[0].decode())
             await asyncio.sleep(0.5)  # let both upstreams finish the handshake
 
             def ev(kind, data, payload=b""):
