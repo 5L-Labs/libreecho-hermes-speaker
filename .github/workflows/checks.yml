@@ -14,3 +14,7 @@ jobs:
         run: |
           for f in setup.sh dot-gadget/install.sh dot-gadget/run root-ssh/install.sh root-ssh/run; do bash -n "$f"; done
           python3 -m py_compile dot-gadget/hermes_gadget_dot.py
+      - name: Voice relay end to end
+        run: |
+          python3 -m pip install -q websockets==16.0  # what the Dot runs (Alpine py3-websockets)
+          python3 tests/test_voice_relay.py
