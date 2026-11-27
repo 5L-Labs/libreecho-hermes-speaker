@@ -23,6 +23,7 @@ PORT = 18765
 async def main() -> None:
     got = {"hello": [], "frames": [], "end": None, "start": None}
     done = asyncio.Event()
+    welcomed = asyncio.Semaphore(0)
 
     async def gadget(ws):
         hello = json.loads(await ws.recv())
@@ -30,6 +31,8 @@ async def main() -> None:
         await ws.send(json.dumps({"type": "challenge", "nonce": "n", "enrolled": False}))
         await ws.recv()  # auth
         await ws.send(json.dumps({"type": "welcome", "paired": True, "heartbeat_s": 20}))
+        await asyncio.sleep(0.05)  # the client handles welcome before anything else we hold back
+        welcomed.release()
         if "mic" not in hello["caps"]:
             await ws.wait_closed()
             return
@@ -71,7 +74,8 @@ async def main() -> None:
             else:
                 proc.terminate()
                 raise AssertionError("relay never listened on 10300:\n" + proc.communicate(timeout=5)[0].decode())
-            await asyncio.sleep(0.5)  # let both upstreams finish the handshake
+            for _ in range(2):  # both upstreams welcomed before the recording starts
+                await asyncio.wait_for(welcomed.acquire(), 10)
 
             def ev(kind, data, payload=b""):
                 body = json.dumps(data).encode()

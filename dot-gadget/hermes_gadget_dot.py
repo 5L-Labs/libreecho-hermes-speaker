@@ -365,6 +365,13 @@ class Device:
             self.mic_ended_at = time.monotonic()
         self.mic = None
 
+    async def mic_cancel(self) -> None:
+        """Tell the upstream to discard the recording being sent (sttd went away mid-way)."""
+        if self.mic is not None:
+            await self._mic_send(json.dumps({"type": "audio.cancel", "id": self.mic["id"],
+                                             "stream": self.mic["stream"], "reason": "recorder stopped"}))
+            self.mic = None
+
     async def _mic_frame(self, payload: bytes) -> None:
         header = struct.pack("<BBH", CHANNEL_AUDIO, self.mic["stream"], self.mic["seq"] & 0xFFFF)
         self.mic["seq"] += 1
@@ -480,7 +487,7 @@ class VoiceRelay:
             log.warning("voice input connection from sttd failed: %s", exc)
         finally:
             if sending:
-                dev.mic = None  # sttd went away mid-recording: the hub drops an utterance with no end
+                await dev.mic_cancel()  # sttd went away mid-recording
             w.close()
 
 
